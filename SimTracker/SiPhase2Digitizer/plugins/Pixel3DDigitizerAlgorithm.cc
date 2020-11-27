@@ -137,11 +137,11 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   //   // Nothing to do, too far away
   //   return std::vector<DigitizerUtility::EnergyDepositUnit>();
   // }
-  if (hpitches.first - std::abs(pos.x()) < max_migration_radius && std::abs(pos.x()) > 5.75_um) {
+  if (hpitches.first - std::abs(pos.x()) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
     displ_ind = 0;
     pitch = hpitches.first;
     //std::cout << "*************This is the x pitch: " << pitch << std::endl;
-  } else if (hpitches.second - std::abs(pos.y()) < max_migration_radius && std::abs(pos.y()) > 15.0_um) {
+  } else if (hpitches.second - std::abs(pos.y()) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
     displ_ind = 1;
     pitch = hpitches.second;
     //std::cout << "*************This is the y pitch: " << pitch << std::endl;
