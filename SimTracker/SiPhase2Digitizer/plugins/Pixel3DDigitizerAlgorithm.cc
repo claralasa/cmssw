@@ -119,19 +119,32 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   //          With the current sigma, this value is dependent of the thickness,
   //          Note that this formulae is coming from planar sensors, a similar
   //          study with data will be needed to extract the sigma for 3D
-  const float max_migration_radius = 0.4_um;
+  const float max_migration_radius = 0.8_um;
+  //const std::pair <float, float> max_migration_xy = std::make_pair(6.75_um, 35.0_um);;
   // Need to know which axis is the relevant one
   int displ_ind = -1;
   float pitch = 0.0;
 
   // Check the group is near the edge of the pixel, so diffusion will
   // be relevant in order to migrate between pixel cells
-  if (std::abs(pos.x() - hpitches.first) < max_migration_radius) {
+  // if (std::abs(pos.x() - hpitches.first) < max_migration_radius) {
+  //   displ_ind = 0;
+  //   pitch = hpitches.first;
+  // } else if (std::abs(pos.y() - hpitches.second) < max_migration_radius) {
+  //   displ_ind = 1;
+  //   pitch = hpitches.second;
+  // } else {
+  //   // Nothing to do, too far away
+  //   return std::vector<DigitizerUtility::EnergyDepositUnit>();
+  // }
+  if (hpitches.first - std::abs(pos.x()) < max_migration_radius && std::abs(pos.x()) > 5.75_um) {
     displ_ind = 0;
     pitch = hpitches.first;
-  } else if (std::abs(pos.y() - hpitches.second) < max_migration_radius) {
+    //std::cout << "*************This is the x pitch: " << pitch << std::endl;
+  } else if (hpitches.second - std::abs(pos.y()) < max_migration_radius && std::abs(pos.y()) > 15.0_um) {
     displ_ind = 1;
     pitch = hpitches.second;
+    //std::cout << "*************This is the y pitch: " << pitch << std::endl;
   } else {
     // Nothing to do, too far away
     return std::vector<DigitizerUtility::EnergyDepositUnit>();
@@ -159,8 +172,8 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
       << "\n(super-)Charge distance to the pixel edge: " << (pitch - pos_moving[displ_ind]) * 1.0_um_inv << " [um]";
 
   // FIXME -- Sigma reference, DM?
-  const float distance0 = 300.0_um;
-  const float sigma0 = 3.4_um;
+  //  const float distance0 = 300.0_um;
+  //  const float sigma0 = 3.4_um;
   // FIXME -- Tolerance, DM?
   const float TOL = 1e-6;
   // How many sigmas (probably a configurable, to be decided not now)
@@ -175,13 +188,23 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   float distance_edge = 0.0_um;
   do {
     std::transform(pos_moving.begin(), pos_moving.end(), do_step(i).begin(), pos_moving.begin(), std::plus<float>());
-    distance_edge = std::abs(pos_moving[displ_ind] - pitch);
+    distance_edge = pitch - std::abs(pos_moving[displ_ind]);
+    //std::cout << "This is the distance away from the edge: " << distance_edge << std::endl;
+    //distance_edge = pitch - std::abs(pos_moving[displ_ind]);
     // current diffusion value
-    double sigma = std::sqrt(i * diffusion_step / distance0) * (distance0 / thickness) * sigma0;
+    double sigma = 0.0;
+    if (displ_ind == 0){
+      sigma = 0.00461627 + 0.0703241*pos_moving[displ_ind] - 6.0538e-03*std::pow(pos_moving[displ_ind],2.0);
+    }else{
+      sigma = 0.00677572 + 0.0645162*pos_moving[displ_ind] - 0.00451801*std::pow(pos_moving[displ_ind],2.0) + 1.22294e-04*std::pow(pos_moving[displ_ind],3.0) - 1.22065e-06*std::pow(pos_moving[displ_ind],4.0);
+    }
+//    double sigma = std::sqrt(i * diffusion_step / distance0) * (distance0 / thickness) * sigma0;
     // Get the amount of charge on the neighbor pixel: note the
     // transformation to a Normal
+    //std::cout << "These are the current carriers: " << current_carriers << std::endl;
     float migrated_e = current_carriers * (1.0 - std::erf(distance_edge / sigma));
-
+    //std::cout << "Carriers does not migrate: " << current_carriers * std::erf(distance_edge / sigma) << std::endl;
+    //std::cout << "These are the migrated carriers: " << migrated_e << std::endl;
     LogDebug("(super-)charge diffusion") << "step-" << i << ", Initial Ne= " << ncarriers << ", "
                                          << "r=(" << pos_moving[0] * 1.0_um_inv << ", " << pos_moving[1] * 1.0_um_inv
                                          << ", " << pos_moving[2] * 1.0_um_inv << ") [um], "
