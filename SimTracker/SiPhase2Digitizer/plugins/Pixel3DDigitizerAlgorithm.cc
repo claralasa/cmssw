@@ -1,19 +1,14 @@
 #include "SimTracker/SiPhase2Digitizer/plugins/Pixel3DDigitizerAlgorithm.h"
 
 // Framework infrastructure
+#include "FWCore/Framework/interface/ConsumesCollector.h"
 #include "FWCore/MessageLogger/interface/MessageLogger.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
-#include "FWCore/ServiceRegistry/interface/Service.h"
 
 // Calibration & Conditions
 #include "CalibTracker/SiPixelESProducers/interface/SiPixelGainCalibrationOfflineSimService.h"
-#include "CondFormats/DataRecord/interface/SiPixelQualityRcd.h"
-#include "CondFormats/DataRecord/interface/SiPixelFedCablingMapRcd.h"
-#include "CondFormats/DataRecord/interface/SiPixelLorentzAngleSimRcd.h"
-#include "CondFormats/SiPixelObjects/interface/SiPixelFedCablingMap.h"
 
 // Geometry
-#include "Geometry/Records/interface/TrackerDigiGeometryRecord.h"
 #include "Geometry/CommonDetUnit/interface/PixelGeomDetUnit.h"
 
 //#include <iostream>
@@ -21,11 +16,15 @@
 #include <vector>
 #include <algorithm>
 
+#include <TProfile2D.h>
+
 using namespace sipixelobjects;
 
-// Analogously to CMSUnits (no um defined)
-constexpr double operator""_um(long double length) { return length * 1e-4; }
-constexpr double operator""_um_inv(long double length) { return length * 1e4; }
+namespace {
+  // Analogously to CMSUnits (no um defined)
+  constexpr double operator""_um(long double length) { return length * 1e-4; }
+  constexpr double operator""_um_inv(long double length) { return length * 1e4; }
+}  // namespace
 
 void Pixel3DDigitizerAlgorithm::init(const edm::EventSetup& es) {
   // XXX: Just copied from PixelDigitizer Algorithm
@@ -37,22 +36,23 @@ void Pixel3DDigitizerAlgorithm::init(const edm::EventSetup& es) {
   }
 
   if (use_deadmodule_DB_) {
-    es.get<SiPixelQualityRcd>().get(siPixelBadModule_);
+    siPixelBadModule_ = &es.getData(siPixelBadModuleToken_);
   }
 
   if (use_LorentzAngle_DB_) {
     // Get Lorentz angle from DB record
-    es.get<SiPixelLorentzAngleSimRcd>().get(siPixelLorentzAngle_);
+    siPixelLorentzAngle_ = &es.getData(siPixelLorentzAngleToken_);
   }
 
   // gets the map and geometry from the DB (to kill ROCs)
-  es.get<SiPixelFedCablingMapRcd>().get(fedCablingMap_);
-  es.get<TrackerDigiGeometryRecord>().get(geom_);
+  fedCablingMap_ = &es.getData(fedCablingMapToken_);
+  geom_ = &es.getData(geomToken_);
 }
 
-Pixel3DDigitizerAlgorithm::Pixel3DDigitizerAlgorithm(const edm::ParameterSet& conf)
+Pixel3DDigitizerAlgorithm::Pixel3DDigitizerAlgorithm(const edm::ParameterSet& conf, edm::ConsumesCollector iC)
     : Phase2TrackerDigitizerAlgorithm(conf.getParameter<edm::ParameterSet>("AlgorithmCommon"),
-                                      conf.getParameter<edm::ParameterSet>("Pixel3DDigitizerAlgorithm")),
+                                      conf.getParameter<edm::ParameterSet>("Pixel3DDigitizerAlgorithm"),
+                                      iC),
       np_column_radius_(
           (conf.getParameter<edm::ParameterSet>("Pixel3DDigitizerAlgorithm").getParameter<double>("NPColumnRadius")) *
           1.0_um),
@@ -61,9 +61,16 @@ Pixel3DDigitizerAlgorithm::Pixel3DDigitizerAlgorithm(const edm::ParameterSet& co
           1.0_um),
       np_column_gap_(
           (conf.getParameter<edm::ParameterSet>("Pixel3DDigitizerAlgorithm").getParameter<double>("NPColumnGap")) *
-          1.0_um) {
+          1.0_um),
+      fedCablingMapToken_(iC.esConsumes()),
+      geomToken_(iC.esConsumes()) {
   // XXX - NEEDED?
   pixelFlag_ = true;
+
+  if (use_deadmodule_DB_)
+    siPixelBadModuleToken_ = iC.esConsumes();
+  if (use_LorentzAngle_DB_)
+    siPixelLorentzAngleToken_ = iC.esConsumes();
 
   edm::LogInfo("Pixel3DDigitizerAlgorithm")
       << "Algorithm constructed \n"
@@ -74,6 +81,48 @@ Pixel3DDigitizerAlgorithm::Pixel3DDigitizerAlgorithm(const edm::ParameterSet& co
       << "\n*** Gain"
       << "\n    Electrons per ADC:" << theElectronPerADC_ << "\n    ADC Full Scale: " << theAdcFullScale_
       << "\n*** The delta cut-off is set to " << tMax_ << "\n*** Pixel-inefficiency: " << addPixelInefficiency_;
+
+
+  // XXX - To be improved the following piece of code - XXX
+
+  // Possible exponents of the functions that the particles will follow while drifting
+  std::vector<float> exponents{1.0/50.0, 1.0/30.0, 1.0/20.0, 1.0/15.0, 1.0/11.0, 1.0/9.0, 1.0/7.0, 1.0/6.0, 1.0/5.0, 1.0/4.0, 1.0/3.0, 1.0/2.0, 2.0/3.0, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 9.0, 11.0, 15.0, 20.0, 30.0, 50.0};
+
+  // Initialize the divisions in the x and y ranges where the exponent is evaluated
+  std::vector<float> x_coord;
+  std::vector<float> y_coord;
+
+  for (int i = 1; i <=25; i++) {
+    float step_x = 0.5_um * i - 0.1_um;
+    x_coord.push_back(step_x);
+  }
+
+  for (int i = 1; i <= 50; i++) {
+    float step_y = 1.0_um * i - 0.1_um;
+    y_coord.push_back(step_y);
+  }
+
+  // Create 2D profile to store the exponents at every position of the pixel cell
+  //  edm::Service<TFileService> tfile;
+  auto exponent_cell = new TProfile2D("exponent_cell","Exponent of the function based on the position in the pixel cell",50,-12.5,12.5,100,-50.0,50.0);
+
+  // Determine the exponent and store it in a pixel cell histogram
+  for (const auto& x : x_coord) {
+    for (const auto& y : y_coord) {
+      // Determine the exponent correspoding to the current position
+      float exp = log(y/50.0_um) / log(x/12.5_um);
+      // Assign the closest one among the possible exponents
+      float upper_exp = (exp < exponents[exponents.size()-1]) ? exponents[std::upper_bound(exponents.begin(), exponents.end(), exp) - exponents.begin()] : exponents.back();
+      float lower_exp = (exp < exponents.front()) ? exponents.front() : exponents[std::find(exponents.begin(), exponents.end(), upper_exp) - exponents.begin() - 1];
+      float nearest_exp = (std::abs(exp - lower_exp) <= std::abs(exp - upper_exp)) ? lower_exp : upper_exp;
+      // Fill histogram that must been defined somewhere
+      exponent_cell->Fill(x * 1.0_um_inv, y * 1.0_um_inv, nearest_exp);
+      exponent_cell->Fill(-x * 1.0_um_inv, y * 1.0_um_inv, nearest_exp);
+      exponent_cell->Fill(x * 1.0_um_inv, -y * 1.0_um_inv, nearest_exp);
+      exponent_cell->Fill(-x * 1.0_um_inv, -y * 1.0_um_inv, nearest_exp);
+    }
+  }
+  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 }
 
 Pixel3DDigitizerAlgorithm::~Pixel3DDigitizerAlgorithm() {}
@@ -119,23 +168,68 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   //          With the current sigma, this value is dependent of the thickness,
   //          Note that this formulae is coming from planar sensors, a similar
   //          study with data will be needed to extract the sigma for 3D
-  const float max_migration_radius = 0.4_um;
+  const float max_migration_radius = 5.0_um;
+  //  const float max_migration_radius = 0.4_um;
   // Need to know which axis is the relevant one
   int displ_ind = -1;
   float pitch = 0.0;
 
+  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+float exp_result = exponent_cell->GetBinContent(exponent_cell->GetXaxis()->FindBin(pos.x() * 1.0_um_inv), exponent_cell->GetYaxis()->FindBin(pos.y() * 1.0_um_inv));
+
+std::cout << "This is the position: (" << pos.x() * 1.0_um_inv << ", " << pos.y() * 1.0_um_inv << ")" << std::endl;
+std::cout << "This is the exponent: " << exp_result << std::endl; 
+std::cout << "************************************************************" << std::endl;
+
+  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
   // Check the group is near the edge of the pixel, so diffusion will
   // be relevant in order to migrate between pixel cells
-  if (hpitches.first - std::abs(pos.x()) < max_migration_radius) {
+  if ((hpitches.first - std::abs(pos.x())) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
     displ_ind = 0;
     pitch = hpitches.first;
-  } else if (hpitches.second - std::abs(pos.y()) < max_migration_radius) {
+//std::cout << "The charge is near the long edge" << std::endl;
+//std::cout << "Pos x: " << pos.x() * 1.0_um_inv << "[um]" << std::endl;
+//std::cout << "Pos y: " << pos.y() * 1.0_um_inv << "[um]" << std::endl;
+  } else if ((hpitches.second - std::abs(pos.y())) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
     displ_ind = 1;
     pitch = hpitches.second;
+//std::cout << "The charge is near the short edge" << std::endl;
+//std::cout << "Pos x: " << pos.x() * 1.0_um_inv << "[um]" << std::endl;
+//std::cout << "Pos y: " << pos.y() * 1.0_um_inv << "[um]" << std::endl;
   } else {
     // Nothing to do, too far away
+//std::cout << "The charge is far away from the edge, so no charge sharing" << std::endl;
+//std::cout << "Pos x: " << pos.x() * 1.0_um_inv << "[um]" << std::endl;
+//std::cout << "Pos y: " << pos.y() * 1.0_um_inv << "[um]" << std::endl;
     return std::vector<DigitizerUtility::EnergyDepositUnit>();
   }
+
+
+//  // Check the group is near the edge of the pixel, so diffusion will
+//  // be relevant in order to migrate between pixel cells
+//  if  ((hpitches.second - std::abs(pos.y())) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
+//    displ_ind = 1;
+//    pitch = hpitches.second;
+////std::cout << "The charge is near the short edge" << std::endl;
+////std::cout << "Pos x: " << pos.x() << std::endl;
+////std::cout << "Pos y: " << pos.y() << std::endl;
+//  } else if ((hpitches.first - std::abs(pos.x())) < max_migration_radius && std::abs(pos.x()) > 5.75_um && std::abs(pos.y()) > 15.0_um) {
+//    displ_ind = 0;
+//    pitch = hpitches.first;
+////std::cout << "The charge is near the long edge" << std::endl;
+////std::cout << "Pos x: " << pos.x() << std::endl;
+////std::cout << "Pos y: " << pos.y() << std::endl;
+//  } else {
+//    // Nothing to do, too far away
+////std::cout << "The charge is far away from the edge, so no charge sharing" << std::endl;
+////std::cout << "Pos x: " << pos.x() << std::endl;
+////std::cout << "Pos y: " << pos.y() << std::endl;
+//    return std::vector<DigitizerUtility::EnergyDepositUnit>();
+//  }
+
+
 
   // The new EnergyDeposits in the neighbour pixels
   // (defined by +1 to the right (first axis) and +1 to the up (second axis)) <-- XXX
@@ -150,6 +244,8 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   std::function<std::vector<float>(int)> do_step =
       [&pos_moving, &u_drift, diffusion_step](int i) -> std::vector<float> {
     auto dd = u_drift(pos_moving[0], pos_moving[1]);
+//std::cout << "dd : (" << dd.x() << ", " << dd.y() << ")" << std::endl;
+//std::cout << "i*diff_step*dd : (" << i * diffusion_step * dd.x() * 1.0_um_inv << ", " << i * diffusion_step * dd.y() * 1.0_um_inv << ") [um]" << std::endl;
     return std::vector<float>({i * diffusion_step * dd.x(), i * diffusion_step * dd.y(), i * diffusion_step * dd.z()});
   };
 
@@ -166,14 +262,24 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
   float current_carriers = ncarriers;
   std::vector<float> newpos({pos_moving[0], pos_moving[1], pos_moving[2]});
   float distance_edge = 0.0_um;
+//std::cout << "Initial number of carriers: " << ncarriers << std::endl;
+//std::cout << "*******************************" << std::endl;
+  // Current diffusion value
+  // const float sigma = 0.4_um;
+  const float sigma = 5.0_um;
+//std::cout << "Diffusion value (sigma): " << sigma << std::endl;
   for (int i = 1;; ++i) {
+//std::cout << "Position: (" << pos_moving[0] * 1.0_um_inv << "," << pos_moving[1] * 1.0_um_inv << ") [um]" << std::endl;
     std::transform(pos_moving.begin(), pos_moving.end(), do_step(i).begin(), pos_moving.begin(), std::plus<float>());
+//std::cout << "Position 2: (" << pos_moving[0] * 1.0_um_inv << "," << pos_moving[1] * 1.0_um_inv << ") [um]" << std::endl;
     distance_edge = pitch - std::abs(pos_moving[displ_ind]);
-    // Current diffusion value
-    const double sigma = 0.4_um;
+//std::cout << "Current number of carriers: " << current_carriers << std::endl;
+//std::cout << "Position: (" << pos_moving[0] * 1.0_um_inv << "," << pos_moving[1] * 1.0_um_inv << "," << pos_moving[2] * 1.0_um_inv << ") [um]" << std::endl;
+//std::cout << "Distance from edge: " << distance_edge * 1.0_um_inv << " [um]" << std::endl;
     // Get the amount of charge on the neighbor pixel: note the
     // transformation to a Normal
     float migrated_e = current_carriers * 0.5 * (1.0 - std::erf(distance_edge / (sigma * std::sqrt(2.0))));
+//std::cout << "Migrated carriers: " << migrated_e << std::endl;
 
     LogDebug("(super-)charge diffusion") << "step-" << i << ", Current carriers Ne= " << current_carriers << ","
                                          << "r=(" << pos_moving[0] * 1.0_um_inv << ", " << pos_moving[1] * 1.0_um_inv
@@ -185,6 +291,7 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
 
     // Either far away from the edge or almost half of the carriers already migrated
     if (std::abs(distance_edge) >= max_migration_radius || current_carriers <= 0.5 * ncarriers) {
+//std::cout << "------- Either far away from the edge or almost half of the carriers already migrated ------" << std::endl;
       break;
     }
 
@@ -195,6 +302,7 @@ std::vector<DigitizerUtility::EnergyDepositUnit> Pixel3DDigitizerAlgorithm::diff
     std::vector<float> newpos(pos_moving);
     // Let's create the new charge carriers around 3 sigmas away
     newpos[displ_ind] += std::copysign(N_SIGMA * sigma, newpos[displ_ind]);
+//std::cout << "Position in the neighbouring pixel: (" << newpos[0] * 1.0_um_inv << "," << newpos[1] * 1.0_um_inv << "," << newpos[2] * 1.0_um_inv << ") [um]" << std::endl;
     migrated_charge.push_back(DigitizerUtility::EnergyDepositUnit(migrated_e, newpos[0], newpos[1], newpos[2]));
   }
   return migrated_charge;
@@ -233,6 +341,8 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
   const int nrows = pixdet->specificTopology().nrows();
   const int ncolumns = pixdet->specificTopology().ncolumns();
   const float pix_rounding = 0.99;
+//std::cout << "Total number of rows: " << nrows << std::endl;
+//std::cout << "Total number of columns: " << ncolumns << std::endl;
 
   // The maximum radial distance is going to be used to evaluate radiation damage XXX?
   const float max_radial_distance =
@@ -244,6 +354,9 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
   // frame is centered at half_width_x,half_width_y,half_thickness
   // XXX -- This info could be obtained at init/construction time?
   LocalPoint center_proxy_cell(half_pitch.first, half_pitch.second, -0.5 * thickness);
+//std::cout << "Center proxy cell x pos: " << center_proxy_cell.x() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Center proxy cell y pos: " << center_proxy_cell.y() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Center proxy cell z pos: " << center_proxy_cell.z() * 1.0_um_inv << " [um]" << std::endl;
 
   LogDebug("Pixel3DDigitizerAlgorithm::drift")
       << "Pixel pitch:" << pitch.first * 1.0_um_inv << ", " << pitch.second * 1.0_um_inv << " [um]";
@@ -252,6 +365,11 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
   // XXX call the function which will return a functional
   std::function<LocalVector(float, float)> drift_direction = [](float x, float y) -> LocalVector {
     const float theta = std::atan2(y, x);
+// std::cout << "x: " << x * 1.0_um_inv << " [um]" << std::endl;
+// std::cout << "y: " << y * 1.0_um_inv << " [um]" << std::endl;
+// std::cout << "theta: " << theta << " [radians]" << std::endl;
+// std::cout << "-cos(theta): " << -std::cos(theta) << std::endl;
+// std::cout << "-sin(theta): " << -std::sin(theta) << std::endl;
     return LocalVector(-std::cos(theta), -std::sin(theta), 0.0);
   };
   // The output
@@ -264,8 +382,13 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
   const float RAD_DAMAGE = 0.001;
 
   for (const auto& super_charge : ionization_points) {
+//std::cout << "*************************************************************" << std::endl;
     // Extract the pixel cell
     auto current_pixel = pixdet->specificTopology().pixel(LocalPoint(super_charge.x(), super_charge.y()));
+//std::cout << "Pixel local x pos: " << super_charge.x() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Pixel local y pos: " << super_charge.y() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Pixel local z pos: " << super_charge.z() * 1.0_um_inv << " [um]" << std::endl;
+
     // `pixel` function does not check to be in the ROC bounds,
     // so check it here and fix potential rounding problems.
     // Careful, this is assuming a rounding problem (1 unit), more than 1 pixel
@@ -274,8 +397,11 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
     // The charge will be moved to the edge of the row/column.
     current_pixel.first = std::clamp(current_pixel.first, float(0.0), (nrows - 1) + pix_rounding);
     current_pixel.second = std::clamp(current_pixel.second, float(0.0), (ncolumns - 1) + pix_rounding);
+//std::cout << "Pixel row number : " << current_pixel.first << std::endl;
+//std::cout << "Pixel column number : " << current_pixel.second << std::endl;
 
     const auto current_pixel_int = std::make_pair(std::floor(current_pixel.first), std::floor(current_pixel.second));
+//std::cout << "Pixel row, column number (int): " << current_pixel_int.first << "," << current_pixel_int.second << std::endl;
 
     // Convert to the 1x1 proxy pixel cell (pc), where all calculations are going to be
     // performed. The pixel is scaled to the actual pitch
@@ -287,6 +413,10 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
     LocalPoint position_at_pc(relative_position_at_pc.first - center_proxy_cell.x(),
                               relative_position_at_pc.second - center_proxy_cell.y(),
                               super_charge.z() - center_proxy_cell.z());
+//std::cout << "Position at pc x pos: " << position_at_pc.x() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Position at pc y pos: " << position_at_pc.y() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "Position at pc z pos: " << position_at_pc.z() * 1.0_um_inv << " [um]" << std::endl;
+    //To do: assert poniendo que en valor absoluto la posicion tiene que estar en valor absoluto entre el centro y la mitad del edge y en el z tiene que ser positivo siempre porque lo pusimos arriba del pixel
 
     LogDebug("Pixel3DDigitizerAlgorithm::drift")
         << "(super-)Charge\nlocal position: (" << super_charge.x() * 1.0_um_inv << ", " << super_charge.y() * 1.0_um_inv
@@ -301,12 +431,15 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
     // Check if the point is inside any of the column --> no charge was actually created then
     if (is_inside_n_column_(position_at_pc, thickness) || is_inside_ohmic_column_(position_at_pc, half_pitch)) {
       LogDebug("Pixel3DDigitizerAlgorithm::drift") << "Remove charge,  inside the n-column or p-column!!";
+//std::cout << "---- The point was inside a column, so deleted! ----" << std::endl;
       continue;
     }
 
     float nelectrons = super_charge.energy();
     // XXX -- Diffusion: using the center frame
+//std::cout << "Diffusion: " << diffusion_activated << std::endl;
     if (diffusion_activated) {
+//std::cout << "Diffusion: " << diffusion_activated << std::endl;
       auto migrated_charges = diffusion(position_at_pc, super_charge.energy(), drift_direction, half_pitch, thickness);
       for (auto& mc : migrated_charges) {
         // Remove the migrated charges
@@ -316,13 +449,17 @@ std::vector<DigitizerUtility::SignalPoint> Pixel3DDigitizerAlgorithm::drift(
         // Adding the pixel
         const float pixel_x = current_pixel_int.first + (mc.x() + center_proxy_cell.x()) / pitch.first;
         const float pixel_y = current_pixel_int.second + (mc.y() + center_proxy_cell.y()) / pitch.second;
+//std::cout << "New pixel row, col: " << pixel_x << "," << pixel_y << std::endl;
         const auto lp = pixdet->specificTopology().localPosition(MeasurementPoint(pixel_x, pixel_y));
         // Remember: the drift function will move the reference system to the top. We need to subtract
         // (center_proxy_cell.z() is a constant negative value) what we previously added in order to
         // avoid a double translation when calling the drift function below the drift function
         // initially considers the reference system centered in the module at half thickness)
         mc.migrate_position(LocalPoint(lp.x(), lp.y(), mc.z() + center_proxy_cell.z()));
+//std::cout << "New pixel local x pos: " << lp.x() * 1.0_um_inv << " [um]" << std::endl;
+//std::cout << "New pixel local y pos: " << lp.y() * 1.0_um_inv << " [um]" << std::endl;
       }
+//std::cout << "****************************************************************************************" << std::endl;
       if (!migrated_charges.empty()) {
         LogDebug("Pixel3DDigitizerAlgorithm::drift") << "****************"
                                                      << "MIGRATING (super-)charges"
