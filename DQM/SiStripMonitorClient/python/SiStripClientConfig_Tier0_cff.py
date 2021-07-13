@@ -53,12 +53,11 @@ mergedSiStripQualityProducer = siStripQualityESProducer.clone(
         cms.PSet(record = cms.string('SiStripBadFiberRcd'), tag = cms.string('')),   # Bad Channel list from the selected IOV as done at PCL
         # BadChannel list from FED errors is included below
         cms.PSet(record = cms.string('RunInfoRcd'), tag = cms.string(''))            # List of FEDs exluded during data taking          
-        )
-    )
-
-mergedSiStripQualityProducer.ReduceGranularity = cms.bool(False)
-mergedSiStripQualityProducer.ThresholdForReducedGranularity = cms.double(0.3)
-mergedSiStripQualityProducer.appendToDataLabel = 'MergedBadComponent'
+        ),
+    ReduceGranularity = False,
+    ThresholdForReducedGranularity = 0.3,
+    appendToDataLabel = 'MergedBadComponent'
+)
 
 siStripBadComponentInfo = cms.EDProducer("SiStripBadComponentInfo",
     StripQualityLabel = cms.string('MergedBadComponent'),
