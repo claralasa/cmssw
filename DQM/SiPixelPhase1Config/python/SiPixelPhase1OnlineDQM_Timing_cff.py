@@ -131,12 +131,12 @@ siPixelPhase1OnlineDQM_harvesting = cms.Sequence(
 
 SiPixelPhase1TrackClustersAnalyzer_cosmics = SiPixelPhase1TrackClustersAnalyzer.clone(
     tracks  = "ctfWithMaterialTracksP5",
-    VertexCut = cms.untracked.bool(False)
+    VertexCut = False
 )
 SiPixelPhase1TrackResidualsAnalyzer_cosmics = SiPixelPhase1TrackResidualsAnalyzer.clone(
     Tracks = "ctfWithMaterialTracksP5",
     trajectoryInput = "ctfWithMaterialTracksP5",
-    VertexCut = cms.untracked.bool(False)
+    VertexCut = False
 )
 
 SiPixelPhase1TrackEfficiencyAnalyzer_cosmics=SiPixelPhase1TrackEfficiencyAnalyzer.clone(
@@ -156,18 +156,18 @@ SiPixelPhase1TrackClustersAnalyzer_pprun = SiPixelPhase1TrackClustersAnalyzer.cl
     tracks  = "initialStepTracksPreSplitting",
     clusterShapeCache = "siPixelClusterShapeCachePreSplitting",
     vertices = 'firstStepPrimaryVerticesPreSplitting',
-    VertexCut = cms.untracked.bool(False)
+    VertexCut = False
 )
 
 SiPixelPhase1TrackResidualsAnalyzer_pprun = SiPixelPhase1TrackResidualsAnalyzer.clone(
     Tracks = "initialStepTracksPreSplitting",
     trajectoryInput = "initialStepTracksPreSplitting",
-    VertexCut = cms.untracked.bool(False)
+    VertexCut = False
 )
 
 SiPixelPhase1TrackEfficiencyAnalyzer_pprun = SiPixelPhase1TrackEfficiencyAnalyzer.clone(
     tracks = "initialStepTracksPreSplitting",
-    VertexCut = cms.untracked.bool(False)
+    VertexCut = False
 )
 
 siPixelPhase1OnlineDQM_source_pprun = cms.Sequence(

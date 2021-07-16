@@ -65,21 +65,7 @@ SiStripMonitorClusterBPTX = SiStripMonitorCluster.clone(
         globalswitchon = True
     ),
     ClusterHisto = True,
-    BPTXfilter = genericTriggerEventFlag4L1bd,
-    PixelDCSfilter = cms.PSet(
-        andOr         = cms.bool(False),
-        dcsInputTag   = cms.InputTag( "scalersRawToDigi" ),
-        dcsPartitions = cms.vint32 ( 28, 29),
-        andOrDcs      = cms.bool(False),
-        errorReplyDcs = cms.bool(True),
-    ),
-    StripDCSfilter = cms.PSet(
-        andOr         = cms.bool(False),
-        dcsInputTag   = cms.InputTag( "scalersRawToDigi" ),
-        dcsPartitions = cms.vint32 ( 24, 25, 26, 27 ),
-        andOrDcs      = cms.bool(False),
-        errorReplyDcs = cms.bool(True),
-    )
+    BPTXfilter = genericTriggerEventFlag4L1bd
 )
 
 from Configuration.Eras.Modifier_stage2L1Trigger_cff import stage2L1Trigger
